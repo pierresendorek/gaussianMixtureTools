@@ -1,4 +1,9 @@
+# todo : gaussianMixtureWrapper containing precomputed values of log
+
 using Distributions
+using Convex
+using SCS
+
 
 include("randomDrawGaussianMixture.jl")
 
@@ -31,6 +36,29 @@ function product(gC1::GaussComp,gC2::GaussComp)
                 - mean(g1)'*invCov1*mean(g1)
                 - mean(g2)'*invCov2*mean(g2))
     return GaussComp(logW[1]+gC1.logW+gC2.logW,MvNormal(M,Gamma))
+end
+
+
+function product(gm1::GaussianMixture,gm2::GaussianMixture)
+    nComp =gm1.prior.K * gm2.prior.K
+    gcArray=Array(GaussComp,nComp)
+    iComp=1
+    maxLogW = -Inf
+    for i1 in 1:gm1.prior.K, i2 in 1:gm2.prior.K
+        gc1 = GaussComp(log(gm1.prior.p[i1]),gm1.components[i1])
+        gc2 = GaussComp(log(gm2.prior.p[i2]),gm2.components[i2])
+        newComp=product(gc1,gc2)
+        gcArray[iComp]=newComp
+        if(maxLogW<newComp.logW)
+            maxLogW=newComp.logW
+        end
+        iComp+=1
+    end
+
+    for iComp in 1:nComp
+        gcArray[iComp].logW -= maxLogW
+    end
+
 end
 
 
@@ -69,6 +97,104 @@ function conditionalProba(gm::GaussianMixture,idxGiven,x,idxNonNegligibleGaussia
     wGauss = wGauss/sum(wGauss)
 
     return MixtureModel(gaussCompArray,wGauss)
+end
+
+
+
+function invSqrtOfGMCovArray(gm::GaussianMixture )
+    invSqrtCovArray=Array(Array{Float64,2},length(gm.prior.p))
+    for i in 1:length(gm.prior.p)
+        DR=eig(gm.components[i].Σ.mat)
+        D=DR[1]
+        R=DR[2]
+        invSqrtLambda = diagm(D)
+        invSqrtCovArray[i] = R*invSqrtLambda*R'
+    end
+    return invSqrtCovArray
+end
+
+
+#=
+function findBoxNegligibleComp(gm::GaussianMixture,multiIndex::Array{Int64,1},invSqrtCovArray)
+    d=length(gm.components[1].μ)
+    # /!\ remove the following and replace by appropriate values
+    xU=2*ones(d)
+    xL=ones(d)
+    # end remove
+
+    K = 1E3
+
+    nComp=length(gm.prior.p)
+    logU
+
+    for iComp in 1:nComp
+        logKhi=-0.5*logdet(2*pi*gm.components[iComp].Σ.mat) + log(gm.prior.p[iComp])
+        mu = gm.components[iComp].μ
+        logU[iComp]=findMaxNegQuadraticFormOnBox(invSqrtCovArray[iComp],mu,logKhi,xL,xU)
+        logL[iComp]=findMinNegQuadraticFormOnBox(invSqrtCovArray[iComp],mu,logKhi,xL,xU)
+    end
+    maxLogU
+    logU-=maxLogU
+    logL-=maxLogU
+
+    U=exp(logU)
+    L=exp(logL)
+
+    idxSortU=sortperm(U)
+    idxSortL=sortperm(L)
+
+    beta = nComp
+    s=0
+    #while(s)
+
+
+
+end
+=#
+
+
+
+
+
+function getBoxVertex(i,xL::Array{Float64,1},xU::Array{Float64,1})
+    # taxes indexes from 1 to 2^d
+    @assert length(xL)==length(xU)
+    d=length(xL)
+    xNew=zeros(Float64,d)
+    s=bin(i-1,d)
+    for c=1:d
+        if s[c]=='0'
+            xNew[c]=xL[c]
+        else
+            xNew[c]=xU[c]
+        end
+    end
+    return xNew
+end
+
+
+function findMaxNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
+    # assumes we maximize -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    x=Variable(length(mu));
+    problem = minimize(sumsquares(sqrtQ*(x-mu)), [x<=xU,x>=xL])
+    solve!(problem,SCSSolver(verbose=0))
+    solution = problem.optval
+    return -0.5*solution + logKhi
+end
+
+
+function findMinNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
+    # assumes we minimize -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    # the min is found on a vertex
+    # to optimize this function : maintain a list of the already evaluated points for the gaussian i
+    d=length(mu)
+    N=2^d
+    vMin=Inf
+    for i in 1:N
+        x=getBoxVertex(i,xL,xU)
+        vMin=minimum([-0.5*sumsquares(sqrtQ*(x-mu)),vMin])
+    end
+    return vMin+logKhi
 end
 
 
@@ -133,6 +259,5 @@ function testGcProduct()
     println(resDirect)
 
 end
-
 
 
