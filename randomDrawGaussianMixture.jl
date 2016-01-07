@@ -1,5 +1,11 @@
 using Distributions
 
+#=
+does not draw a sample according to a gaussian mixture
+but draws the parameters of a gaussian mixture
+=> useful for testing
+=#
+
 function randomDrawGaussianMixture(nComp::Int64)
     dMean = MvNormal(zeros(2),10^2*eye(2,2)) # distribution of the means
     dCov=Wishart(2.0, eye(2))
