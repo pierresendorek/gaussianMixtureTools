@@ -19,7 +19,7 @@ end
 
 
 
-
+# datatype definition
 GaussianMixture=Distributions.MixtureModel{Distributions.Multivariate,Distributions.Continuous,Distributions.MvNormal{PDMats.PDMat,Array{Float64,1}}}
 
 function product(gC1::GaussComp,gC2::GaussComp)
@@ -39,7 +39,7 @@ function product(gC1::GaussComp,gC2::GaussComp)
 end
 
 
-function product(gm1::GaussianMixture,gm2::GaussianMixture)
+function productAndNormalize(gm1::GaussianMixture,gm2::GaussianMixture)
     nComp =gm1.prior.K * gm2.prior.K
     gcArray=Array(GaussComp,nComp)
     iComp=1
@@ -51,14 +51,33 @@ function product(gm1::GaussianMixture,gm2::GaussianMixture)
         gcArray[iComp]=newComp
         if(maxLogW<newComp.logW)
             maxLogW=newComp.logW
-        end
+        end 
         iComp+=1
     end
-
+    # normalize by the max (avoids cancelling the weights)
     for iComp in 1:nComp
         gcArray[iComp].logW -= maxLogW
     end
-
+    
+    # normalize by the sum
+    s=0.0
+    for iComp in 1:nComp
+        s+= exp( gcArray[iComp].logW )
+    end
+    
+    for iComp in 1:nComp
+        gcArray[iComp].logW -= s
+    end
+    
+    # create a GaussianMixture
+    normalArray=Array(FullNormal,nComp)
+    w = zeros(Float64,nComp)
+    
+    for iComp in 1:nComp
+        w[iComp]=exp(gcArray[iComp].logW)
+        normalArray[iComp] = gcArray[iComp].normal
+    end
+    return  MixtureModel(normalArray,w)
 end
 
 
@@ -154,8 +173,6 @@ end
 
 
 
-
-
 function getBoxVertex(i,xL::Array{Float64,1},xU::Array{Float64,1})
     # taxes indexes from 1 to 2^d
     @assert length(xL)==length(xU)
@@ -197,7 +214,15 @@ function findMinNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
     return vMin+logKhi
 end
 
-
+function findLowerBoundNegQuadraticFormOnBox(eigQ0,mu,logKhi,xL,xU)
+    # eigQ0 is the highest eigenvalue of sqrtQ'*sqrtQ
+    # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    # this function is faster than findMinNegQuadraticFormOnBox for high dimensions
+    m=(xL+xU)/2
+    r=norm((xU-xL)/2)
+    vMin = -eigQ0*norm(m - r*(m-mu)/norm(m-mu))^2    
+    return vMin+logKhi
+end
 
 
 #=================================
@@ -259,5 +284,6 @@ function testGcProduct()
     println(resDirect)
 
 end
+
 
 
