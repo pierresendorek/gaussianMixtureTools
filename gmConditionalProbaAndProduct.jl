@@ -13,6 +13,56 @@ type GaussComp
     normal::MvNormal
 end
 
+
+type Grid
+    y::Array{Float64,2} # y[i,d] is the d'th dimension of the i'th vector
+end
+
+function newGrid(y::Array{Float64,2})
+    @assert size(y)[1]>=2
+    # creates a Grid in the right format
+    D=size(y)[2]
+    for d in 1:D
+        y[:,d]=sort(y[:,d])        
+    end
+    return Grid(y)
+end
+
+
+function getBoxBoundaries(multiIndex::Array{Int64,1},grid::Grid)
+    @assert length(multiIndex)==size(y)[2]
+    D=size(y)[2]
+    zL=zeros(Float64,D)
+    zU=zeros(Float64,D)   
+    for d in 1:D
+        i=multiIndex[d]
+        if i==0
+            zL[d]=-Inf
+            zU[d]=grid.y[i+1,d]
+        elseif i==size(y)[1]
+            zL[d]=grid.y[i,d]
+            zU[d]=+Inf
+        else
+            zL[d]=grid.y[i,d]
+            zU[d]=grid.y[i+1,d]
+        end
+    end
+    return (zL,zU)
+end
+
+
+function pointToBoxMultiIndex(x::Array{Float64,1},grid::Grid)
+    @assert length(x)==size(y)[2]
+    D=length(x)
+    multiIndex=Array(Int64,D)
+    for d in 1:D
+        i=searchsortedlast(grid.y[:,d],x[d])
+        multiIndex[d]=i
+    end
+    return multiIndex
+end
+
+
 function evalGaussComp(x::Vector,gc::GaussComp)
     return exp(gc.logW + logpdf(gc.normal,x))
 end
@@ -58,21 +108,21 @@ function productAndNormalize(gm1::GaussianMixture,gm2::GaussianMixture)
     for iComp in 1:nComp
         gcArray[iComp].logW -= maxLogW
     end
-    
+
     # normalize by the sum
     s=0.0
     for iComp in 1:nComp
         s+= exp( gcArray[iComp].logW )
     end
-    
+
     for iComp in 1:nComp
         gcArray[iComp].logW -= s
     end
-    
+
     # create a GaussianMixture
     normalArray=Array(FullNormal,nComp)
     w = zeros(Float64,nComp)
-    
+
     for iComp in 1:nComp
         w[iComp]=exp(gcArray[iComp].logW)
         normalArray[iComp] = gcArray[iComp].normal
@@ -171,7 +221,29 @@ function findBoxNegligibleComp(gm::GaussianMixture,multiIndex::Array{Int64,1},in
 end
 =#
 
+function findMaxNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
+    # assumes we maximize -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    x=Variable(length(mu));
+    problem = minimize(sumsquares(sqrtQ*(x-mu)), [x<=xU,x>=xL])
+    solve!(problem,SCSSolver(verbose=0))
+    solution = problem.optval
+    return -0.5*solution + logKhi
+end
 
+
+function findLowerBoundNegQuadraticFormOnBox(eigQ0,mu,logKhi,xL,xU)
+    # eigQ0 is the highest eigenvalue of sqrtQ'*sqrtQ
+    # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    # this function is much faster than findMinNegQuadraticFormOnBox for high dimensions
+    m=(xL+xU)/2
+    r=norm((xU-xL)/2)
+    return -eigQ0*norm(m - r*(m-mu)/norm(m-mu))^2+logKhi
+end
+
+
+#===========================================
+Less useful
+===========================================#
 
 function getBoxVertex(i,xL::Array{Float64,1},xU::Array{Float64,1})
     # taxes indexes from 1 to 2^d
@@ -189,17 +261,6 @@ function getBoxVertex(i,xL::Array{Float64,1},xU::Array{Float64,1})
     return xNew
 end
 
-
-function findMaxNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
-    # assumes we maximize -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
-    x=Variable(length(mu));
-    problem = minimize(sumsquares(sqrtQ*(x-mu)), [x<=xU,x>=xL])
-    solve!(problem,SCSSolver(verbose=0))
-    solution = problem.optval
-    return -0.5*solution + logKhi
-end
-
-
 function findMinNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
     # assumes we minimize -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
     # the min is found on a vertex
@@ -211,16 +272,6 @@ function findMinNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
         x=getBoxVertex(i,xL,xU)
         vMin=minimum([-0.5*sumsquares(sqrtQ*(x-mu)),vMin])
     end
-    return vMin+logKhi
-end
-
-function findLowerBoundNegQuadraticFormOnBox(eigQ0,mu,logKhi,xL,xU)
-    # eigQ0 is the highest eigenvalue of sqrtQ'*sqrtQ
-    # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
-    # this function is faster than findMinNegQuadraticFormOnBox for high dimensions
-    m=(xL+xU)/2
-    r=norm((xU-xL)/2)
-    vMin = -eigQ0*norm(m - r*(m-mu)/norm(m-mu))^2    
     return vMin+logKhi
 end
 
