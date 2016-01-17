@@ -7,6 +7,11 @@ using SCS
 
 include("randomDrawGaussianMixture.jl")
 
+
+# datatype definition
+GaussianMixture=Distributions.MixtureModel{Distributions.Multivariate,Distributions.Continuous,Distributions.MvNormal{PDMats.PDMat,Array{Float64,1}}}
+
+
 # use typing for gaussians
 type GaussComp
     logW::Float64
@@ -15,25 +20,74 @@ end
 
 
 type Grid
+    # one Grid is associated to only one Gaussian Mixture
     y::Array{Float64,2} # y[i,d] is the d'th dimension of the i'th vector
+    multiIndexToNonNegligibleComp::Dict{Array{Int64,1},Array{Int64,1}} # for each multiIndex 
 end
 
+
+type GaussianMixtureAuxiliary
+    gm::GaussianMixture
+    grid::Grid
+    invSqrtCovArray::Array{Array{Float64,2},1}
+    eigQ0Array::Array{Float64,1} # biggest eigenvalue of the inverseCovariance for each component
+    logDet2piCov::Array{Float64,1}
+end
+
+
 function newGrid(y::Array{Float64,2})
+    # todo : create extended boundaries so as to (almost) never use infinity
     @assert size(y)[1]>=2
     # creates a Grid in the right format
     D=size(y)[2]
     for d in 1:D
-        y[:,d]=sort(y[:,d])        
+        y[:,d]=sort(y[:,d])
     end
-    return Grid(y)
+    return Grid(y,Dict{Array{Int64,1},Array{Int64,1}}())
 end
 
 
+function invSqrtOfGMCovArrayAndEigQ0Array(gm::GaussianMixture )
+    invSqrtCovArray=Array(Array{Float64,2},length(gm.prior.p))
+    eigQ0Array=Array(Float64,length(gm.prior.p))
+    for i in 1:length(gm.prior.p)
+        DR=eig(cov(gm.components[i]))
+        D=DR[1]
+        R=DR[2]
+        invEig=1./D
+        eigQ0Array[i]=invEig[1]
+        invSqrtLambda = diagm(sqrt(invEig))
+        invSqrtCovArray[i] = R*invSqrtLambda*R'
+    end
+    return (invSqrtCovArray,eigQ0Array)
+end
+
+
+
+function GaussianMixtureAuxiliary(gm::GaussianMixture,nPoint::Int64)
+    D=length(gm.components[1].μ)
+    y=zeros(Float64,nPoint,D)
+    for iPoint in 1:nPoint
+        y[iPoint,:]=rand(gm)
+    end
+    grid=newGrid(y)
+    logDet2piCov=Array{Float64,length(gm.prior.p)}
+    for iComp in 1:length(gm.prior.p)
+        logDet2piCov[iComp]=logdet(2*pi*cov(gm.components[iComp]))
+    end    
+    res=invSqrtOfGMCovArrayAndEigQ0Array(gm)    
+    return GaussianMixtureAuxiliary(gm,grid,res[1],res[2],logDet2piCov)
+end
+
+
+
+
 function getBoxBoundaries(multiIndex::Array{Int64,1},grid::Grid)
+    # multiIndex to points
     @assert length(multiIndex)==size(y)[2]
     D=size(y)[2]
     zL=zeros(Float64,D)
-    zU=zeros(Float64,D)   
+    zU=zeros(Float64,D)
     for d in 1:D
         i=multiIndex[d]
         if i==0
@@ -69,9 +123,6 @@ end
 
 
 
-# datatype definition
-GaussianMixture=Distributions.MixtureModel{Distributions.Multivariate,Distributions.Continuous,Distributions.MvNormal{PDMats.PDMat,Array{Float64,1}}}
-
 function product(gC1::GaussComp,gC2::GaussComp)
     g1=gC1.normal
     g2=gC2.normal
@@ -101,7 +152,7 @@ function productAndNormalize(gm1::GaussianMixture,gm2::GaussianMixture)
         gcArray[iComp]=newComp
         if(maxLogW<newComp.logW)
             maxLogW=newComp.logW
-        end 
+        end
         iComp+=1
     end
     # normalize by the max (avoids cancelling the weights)
@@ -133,7 +184,8 @@ end
 
 function conditionalProba(gm::GaussianMixture,idxGiven,x,idxNonNegligibleGaussianComp)
     # only the idxGiven indexes of x are taken into account as xQ !
-    d=length(gm.components[1])
+    # todo : use logDet2piCov where possible
+    d=length(gm.components[1].μ)
     nTotalGauss= length(gm.components)
     nNonNegligibleGauss = length(idxNonNegligibleGaussianComp)
     idxNotGiven=setdiff(collect(1:d),idxGiven)
@@ -170,37 +222,75 @@ end
 
 
 
-function invSqrtOfGMCovArray(gm::GaussianMixture )
-    invSqrtCovArray=Array(Array{Float64,2},length(gm.prior.p))
-    for i in 1:length(gm.prior.p)
-        DR=eig(gm.components[i].Σ.mat)
-        D=DR[1]
-        R=DR[2]
-        invSqrtLambda = diagm(D)
-        invSqrtCovArray[i] = R*invSqrtLambda*R'
+
+
+
+
+
+function findMaxNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
+    # assumes we maximize -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    x=Variable(length(mu));
+    problem = minimize(sumsquares(sqrtQ*(x-mu)), [x<=xU,x>=xL])
+    solve!(problem,SCSSolver(verbose=0))
+    solution = problem.optval
+    return -0.5*solution + logKhi
+end
+
+
+function findLowerBoundNegQuadraticFormOnBox(eigQ0,mu,logKhi,xL,xU)
+    # eigQ0 is the highest eigenvalue of sqrtQ'*sqrtQ
+    # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    # this function is much faster than findMinNegQuadraticFormOnBox for high dimensions
+    m=(xL+xU)/2
+    r=norm((xU-xL)/2)
+    return -eigQ0*norm(m - r*(m-mu)/norm(m-mu))^2+logKhi
+end
+
+
+#= 
+type GaussianMixtureAuxiliary
+     gm::GaussianMixture
+    grid::Grid
+    invSqrtCovArray::Array{Array{Float64,2},1}
+    eigQ0Array::Array{Float64,1} # biggest eigenvalue of the inverseCovariance for each component
+    logDet2piCov
+end
+=#
+
+#=
+type Grid
+    # one Grid is associated to only one Gaussian Mixture
+    y::Array{Float64,2} # y[i,d] is the d'th dimension of the i'th vector
+    multiIndexToNonNegligibleComp::Dict{Array{Int64,1},Array{Int64,1}} # for each multiIndex 
+end
+=#
+
+function multiIndexToNonNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureAuxiliary)
+    d=length(gm.components[1].μ)
+    @assert d==length(multiIndex)
+    if haskey(gma.grid.multiIndexToNonNegligibleComp,multiIndex)
+        return gma.grid.multiIndexToNonNegligibleComp[multiIndex]
+    else
+        return findBoxNegligibleComp(multiIndex, gma)
     end
-    return invSqrtCovArray
 end
 
 
 #=
-function findBoxNegligibleComp(gm::GaussianMixture,multiIndex::Array{Int64,1},invSqrtCovArray)
-    d=length(gm.components[1].μ)
-    # /!\ remove the following and replace by appropriate values
-    xU=2*ones(d)
-    xL=ones(d)
-    # end remove
-
-    K = 1E3
-
+function findBoxNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureAuxiliary)
+    d=length(mean(gm.components[1]))
+    y=getBoxBoundaries(multiIndex::Array{Int64,1},grid::Grid)
+    xL=y[1]
+    xU=y[2]
+    gm=gma.gm
     nComp=length(gm.prior.p)
-    logU
+    
 
     for iComp in 1:nComp
-        logKhi=-0.5*logdet(2*pi*gm.components[iComp].Σ.mat) + log(gm.prior.p[iComp])
-        mu = gm.components[iComp].μ
+        logKhi=-0.5*gma.logDet2piCov[iComp] + log(gm.prior.p[iComp])
+        mu = mean(gm.components[iComp])
         logU[iComp]=findMaxNegQuadraticFormOnBox(invSqrtCovArray[iComp],mu,logKhi,xL,xU)
-        logL[iComp]=findMinNegQuadraticFormOnBox(invSqrtCovArray[iComp],mu,logKhi,xL,xU)
+        logL[iComp]=findLowerBoundNegQuadraticFormOnBox(gma.eigQ0Array[iComp],mu,logKhi,xL,xU)
     end
     maxLogU
     logU-=maxLogU
@@ -221,24 +311,9 @@ function findBoxNegligibleComp(gm::GaussianMixture,multiIndex::Array{Int64,1},in
 end
 =#
 
-function findMaxNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
-    # assumes we maximize -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
-    x=Variable(length(mu));
-    problem = minimize(sumsquares(sqrtQ*(x-mu)), [x<=xU,x>=xL])
-    solve!(problem,SCSSolver(verbose=0))
-    solution = problem.optval
-    return -0.5*solution + logKhi
-end
 
 
-function findLowerBoundNegQuadraticFormOnBox(eigQ0,mu,logKhi,xL,xU)
-    # eigQ0 is the highest eigenvalue of sqrtQ'*sqrtQ
-    # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
-    # this function is much faster than findMinNegQuadraticFormOnBox for high dimensions
-    m=(xL+xU)/2
-    r=norm((xU-xL)/2)
-    return -eigQ0*norm(m - r*(m-mu)/norm(m-mu))^2+logKhi
-end
+
 
 
 #===========================================
