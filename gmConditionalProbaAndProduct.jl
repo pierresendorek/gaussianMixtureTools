@@ -22,7 +22,7 @@ end
 type Grid
     # one Grid is associated to only one Gaussian Mixture
     y::Array{Float64,2} # y[i,d] is the d'th dimension of the i'th vector
-    multiIndexToNonNegligibleComp::Dict{Array{Int64,1},Array{Int64,1}} # for each multiIndex
+    multiIndexToNonNegligibleComp::Dict{Array{Int64,1},Set{Int64}} # for each multiIndex
 end
 
 
@@ -288,7 +288,7 @@ function multiIndexToNonNegligibleComp(multiIndex::Array{Int64,1}, gma::Gaussian
     if haskey(gma.grid.multiIndexToNonNegligibleComp,multiIndex)
         return gma.grid.multiIndexToNonNegligibleComp[multiIndex]
     else
-        nnIdx=findBoxNegligibleComp(multiIndex, gma)
+        nnIdx=findBoxNonNegligibleComp(multiIndex, gma)
         # todo update the Dict !
         gma.grid.multiIndexToNonNegligibleComp[multiIndex]=nnIdx
         return nnIdx
@@ -401,7 +401,7 @@ function testConditionalProba(gma::GaussianMixtureAuxiliary)
     x=randn(2)
     idxNonNegligibleGaussianComp = collect(1:nComp)
     #multiIndex
-    #idxNonNegligibleGaussianComp=findBoxNegligibleComp( ,gma)
+    #idxNonNegligibleGaussianComp=findBoxNonNegligibleComp( ,gma)
     cgm = conditionalProba(gm,idxGiven,x,idxNonNegligibleGaussianComp)
 
     X=randn(10)
