@@ -4,7 +4,7 @@ using Distributions
 using Convex
 using SCS
 
-
+include("randomDrawGaussianMixture.jl")
 
 
 
@@ -31,6 +31,7 @@ type GaussianMixtureAuxiliary
     grid::Grid
     invSqrtCovArray::Array{Array{Float64,2},1}
     eigLambda0Array::Array{Float64,1} # biggest eigenvalue of the inverseCovariance for each component
+    eigLambdaEndArray::Array{Float64,1} # smallest eigenvalue of the inverseCovariance for each component
     logDet2piCov::Array{Float64,1}
 end
 
@@ -55,19 +56,21 @@ function newGrid(y::Array{Float64,2})
 end
 
 
-function invSqrtOfGMCovArrayAndEigQ0Array(gm::GaussianMixture )
+function invSqrtOfGMCovArrayAndEig(gm::GaussianMixture )
     invSqrtCovArray=Array(Array{Float64,2},length(gm.prior.p))
     eigLambda0Array=Array(Float64,length(gm.prior.p))
+    eigLambdaEndArray=Array(Float64,length(gm.prior.p))
     for i in 1:length(gm.prior.p)
         DR=eig(cov(gm.components[i]))
         D=DR[1]
         R=DR[2]
         invEig=1./D
         eigLambda0Array[i]=invEig[1]
+        eigLambdaEndArray[i]=invEig[end]
         invSqrtLambda = diagm(sqrt(invEig))
         invSqrtCovArray[i] = R*invSqrtLambda*R'
     end
-    return (invSqrtCovArray,eigLambda0Array)
+    return (invSqrtCovArray,eigLambda0Array,eigLambdaEndArray)
 end
 
 
@@ -79,12 +82,12 @@ function GaussianMixtureAuxiliary(gm::GaussianMixture,nPoint::Int64)
         y[iPoint,:]=rand(gm)
     end
     grid=newGrid(y)
-    logDet2piCov=Array{Float64,length(gm.prior.p)}
+    logDet2piCov=Array(Float64,length(gm.prior.p))
     for iComp in 1:length(gm.prior.p)
         logDet2piCov[iComp]=logdet(2*pi*cov(gm.components[iComp]))
     end
-    res=invSqrtOfGMCovArrayAndEigQ0Array(gm)
-    return GaussianMixtureAuxiliary(gm,grid,res[1],res[2],logDet2piCov)
+    res=invSqrtOfGMCovArrayAndEig(gm)
+    return GaussianMixtureAuxiliary(gm,grid,res[1],res[2],res[3],logDet2piCov)
 end
 
 
@@ -92,8 +95,8 @@ end
 
 function getBoxBoundaries(multiIndex::Array{Int64,1},grid::Grid)
     # multiIndex to points
-    @assert length(multiIndex)==size(y)[2]
-    D=size(y)[2]
+    @assert length(multiIndex)==size(grid.y)[2]
+    D=size(grid.y)[2]
     zL=zeros(Float64,D)
     zU=zeros(Float64,D)
     for d in 1:D
@@ -101,7 +104,7 @@ function getBoxBoundaries(multiIndex::Array{Int64,1},grid::Grid)
         if i==0
             zL[d]=-Inf
             zU[d]=grid.y[i+1,d]
-        elseif i==size(y)[1]
+        elseif i==size(grid.y)[1]
             zL[d]=grid.y[i,d]
             zU[d]=+Inf
         else
@@ -243,6 +246,22 @@ function findMaxNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
 end
 
 
+
+function findHigherBoundNegQuadraticFormOnBox(eigLambdaEnd,mu,logKhi,xL,xU)
+    # eigLambdaEnd is the lowest eigenvalue of sqrtQ'*sqrtQ
+    # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    # this function is faster than findMaxNegQuadraticFormOnBox
+    if norm(xL)==Inf || norm(xU)==Inf
+        return -Inf
+    end
+
+    m=(xL+xU)/2
+    r=norm((xU-xL)/2)
+    return -eigLambdaEnd*norm(m + r*(m-mu)/norm(m-mu))^2+logKhi
+end
+
+
+
 function findLowerBoundNegQuadraticFormOnBox(eigLambda0,mu,logKhi,xL,xU)
     # eigLambda0 is the highest eigenvalue of sqrtQ'*sqrtQ
     # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
@@ -265,32 +284,37 @@ function multiIndexToNonNegligibleComp(multiIndex::Array{Int64,1}, gma::Gaussian
     if reduce(|,[(v==0 | v==maxLen) for v in multiIndex])
         return Set{Int64}(1:length(gma.gm.prior.p))
     end
-    
+
     if haskey(gma.grid.multiIndexToNonNegligibleComp,multiIndex)
         return gma.grid.multiIndexToNonNegligibleComp[multiIndex]
     else
-        return findBoxNegligibleComp(multiIndex, gma)
+        nnIdx=findBoxNegligibleComp(multiIndex, gma)
+        # todo update the Dict !
+        gma.grid.multiIndexToNonNegligibleComp[multiIndex]=nnIdx
+        return nnIdx
     end
 end
 
 
 
-function findBoxNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureAuxiliary)
-    d=length(mean(gm.components[1]))
-    y=getBoxBoundaries(multiIndex::Array{Int64,1},grid::Grid)
+function findBoxNonNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureAuxiliary)
+    d=length(mean(gma.gm.components[1]))
+    y=getBoxBoundaries(multiIndex,gma.grid)
     xL=y[1]
     xU=y[2]
     gm=gma.gm
     nComp=length(gm.prior.p)
-
-
+    invSqrtCovArray = gma.invSqrtCovArray
+    logU=Array(Float64,nComp)
+    logL=Array(Float64,nComp)
     for iComp in 1:nComp
         logKhi=-0.5*gma.logDet2piCov[iComp] + log(gm.prior.p[iComp])
         mu = mean(gm.components[iComp])
-        logU[iComp]=findMaxNegQuadraticFormOnBox(invSqrtCovArray[iComp],mu,logKhi,xL,xU)
+        logU[iComp]=findHigherBoundNegQuadraticFormOnBox(gma.eigLambdaEndArray[iComp],mu,logKhi,xL,xU)
+        #logU[iComp]=findMaxNegQuadraticFormOnBox(invSqrtCovArray[iComp],mu,logKhi,xL,xU)
         logL[iComp]=findLowerBoundNegQuadraticFormOnBox(gma.eigLambda0Array[iComp],mu,logKhi,xL,xU)
     end
-    maxLogU
+    maxLogU = maximum(logU) # cant take logL because it's -Inf
     logU-=maxLogU
     logL-=maxLogU
 
@@ -299,25 +323,26 @@ function findBoxNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureA
 
     idxSortU=sortperm(U)
     idxSortL=sortperm(L)
-   # todo : decrease the value of beta as long as there is not enough components
+
     K=1E3
     beta = nComp
     nNegligibleCompTarget=nComp*0.9
-    sU=0.0
     sL=0.0
     iu=1
-    sU+=U[idxSort[iu]]
-    negligibleSet=Set{Int64}()
-    #while(iu<nNegligibleCompTarget)
-    while(sU<K*L[idxSortL[beta]])
-        push!(negligibleSet,idxSort[iu])
+    sU=U[idxSortU[iu]]
+    negligibleIndexSet=Set{Int64}()
+    # todo decrease the value of beta as long as there is not enough negligible components
+    # while(iu<nNegligibleCompTarget || beta<2)
+    while(K*sU<L[idxSortL[beta]])
+        push!(negligibleIndexSet,idxSortU[iu])
         iu+=1
-        sU+=U[idxSort[iu]]
+        sU+=U[idxSortU[iu]]
     end
-    nonNegligibleIndexSet = setdiff(Set{Int64}(1:nComp),negligibleSet)
+    #    beta-=1
+    #end
+    nonNegligibleIndexSet = setdiff(Set{Int64}(1:nComp),negligibleIndexSet)
     return nonNegligibleIndexSet
 end
-
 
 
 
@@ -361,13 +386,22 @@ end
 Testing
 ==================================#
 
+gm=randomDrawGaussianMixture(50)
+gma=GaussianMixtureAuxiliary(gm,50)
 
-function testConditionalProba()
+findBoxNonNegligibleComp([2,2], gma)
+
+
+
+
+function testConditionalProba(gma::GaussianMixtureAuxiliary)
     nComp=10
     gm = randomDrawGaussianMixture(nComp)
     idxGiven = [2]
     x=randn(2)
     idxNonNegligibleGaussianComp = collect(1:nComp)
+    #multiIndex
+    #idxNonNegligibleGaussianComp=findBoxNegligibleComp( ,gma)
     cgm = conditionalProba(gm,idxGiven,x,idxNonNegligibleGaussianComp)
 
     X=randn(10)
