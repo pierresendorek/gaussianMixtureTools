@@ -5,7 +5,7 @@ using Convex
 using SCS
 
 
-include("randomDrawGaussianMixture.jl")
+
 
 
 # datatype definition
@@ -63,7 +63,7 @@ function invSqrtOfGMCovArrayAndEigQ0Array(gm::GaussianMixture )
         D=DR[1]
         R=DR[2]
         invEig=1./D
-        eigLambda0Array[i]=invEig[1] 
+        eigLambda0Array[i]=invEig[1]
         invSqrtLambda = diagm(sqrt(invEig))
         invSqrtCovArray[i] = R*invSqrtLambda*R'
     end
@@ -250,7 +250,7 @@ function findLowerBoundNegQuadraticFormOnBox(eigLambda0,mu,logKhi,xL,xU)
     if norm(xL)==Inf || norm(xU)==Inf
         return -Inf
     end
-        
+
     m=(xL+xU)/2
     r=norm((xU-xL)/2)
     return -eigLambda0*norm(m - r*(m-mu)/norm(m-mu))^2+logKhi
@@ -258,11 +258,14 @@ end
 
 
 
-
 function multiIndexToNonNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureAuxiliary)
-    # todo : if multiIndex contains 0 or "end" then return every possible index
     d=length(mean(gm.components[1]))
     @assert d==length(multiIndex)
+    maxLen = size(gma.grid.y)[1]
+    if reduce(|,[(v==0 | v==maxLen) for v in multiIndex])
+        return Set{Int64}(1:length(gma.gm.prior.p))
+    end
+    
     if haskey(gma.grid.multiIndexToNonNegligibleComp,multiIndex)
         return gma.grid.multiIndexToNonNegligibleComp[multiIndex]
     else
@@ -271,7 +274,7 @@ function multiIndexToNonNegligibleComp(multiIndex::Array{Int64,1}, gma::Gaussian
 end
 
 
-#=
+
 function findBoxNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureAuxiliary)
     d=length(mean(gm.components[1]))
     y=getBoxBoundaries(multiIndex::Array{Int64,1},grid::Grid)
@@ -296,16 +299,24 @@ function findBoxNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureA
 
     idxSortU=sortperm(U)
     idxSortL=sortperm(L)
-
+   # todo : decrease the value of beta as long as there is not enough components
+    K=1E3
     beta = nComp
-    s=0
-    #while(s)
-
-
-
+    nNegligibleCompTarget=nComp*0.9
+    sU=0.0
+    sL=0.0
+    iu=1
+    sU+=U[idxSort[iu]]
+    negligibleSet=Set{Int64}()
+    #while(iu<nNegligibleCompTarget)
+    while(sU<K*L[idxSortL[beta]])
+        push!(negligibleSet,idxSort[iu])
+        iu+=1
+        sU+=U[idxSort[iu]]
+    end
+    nonNegligibleIndexSet = setdiff(Set{Int64}(1:nComp),negligibleSet)
+    return nonNegligibleIndexSet
 end
-=#
-
 
 
 
