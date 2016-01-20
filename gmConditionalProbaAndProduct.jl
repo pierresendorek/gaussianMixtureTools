@@ -21,7 +21,7 @@ end
 
 type Grid
     # one Grid is associated to only one Gaussian Mixture
-    y::Array{Float64,2} # y[i,d] is the d'th dimension of the i'th vector
+    y::Array{Array{Float64,1},1} # y[d][i] is the d'th dimension of the i'th vector
     multiIndexToNonNegligibleComp::Dict{Array{Int64,1},Set{Int64}} # for each multiIndex
 end
 
@@ -33,27 +33,38 @@ type GaussianMixtureAuxiliary
     eigLambda0Array::Array{Float64,1} # biggest eigenvalue of the inverseCovariance for each component
     eigLambdaEndArray::Array{Float64,1} # smallest eigenvalue of the inverseCovariance for each component
     logDet2piCov::Array{Float64,1}
+    # todo ? : add middle point for non-idxGiven boxes
 end
 
 
-function newGrid(y::Array{Float64,2})
-    @assert size(y)[1]>=2
+
+function newGrid(points::Array{Float64,2},idxGiven=[])
+     @assert size(points)[1]>=2
     # creates a Grid in the right format
-    D=size(y)[2]
+    # points[i,d] d'th dimension of the i'th point
+    # todo : use the gm structure to derive these bounds instead (more accurate)
+    D=size(points)[2]
+    y=Array(Array{Float64,1},D)
     for d in 1:D
-        y[:,d]=sort(y[:,d])
+        y[d]=Array(Float64,1)
+        points[:,d]=sort(points[:,d])
+        if in(d,idxGiven)
+            y[d]=points[:,d]
+        else
+            y[d]=[points[1,d],points[end,d]]
+        end
+        # creates extended boundaries so as to hardly land on an infinite-sized box    
+        minD=points[1,d]
+        maxD=points[end,d]
+        deltaD =  maxD-minD
+        
+        y[d][1]=minD-1*deltaD
+        y[d][end]=maxD+1*deltaD
     end
 
-    # creates extended boundaries so as to hardly land on an infinite-sized box
-    for d in 1:D
-        minD=minimum(y[:,d])
-        maxD=maximum(y[:,d])
-        deltaD =  maxD-minD
-        y[1,d]=minD-2*deltaD
-        y[end,d]=maxD+2*deltaD
-    end
     return Grid(y,Dict{Array{Int64,1},Array{Int64,1}}())
 end
+
 
 
 function invSqrtOfGMCovArrayAndEig(gm::GaussianMixture )
@@ -70,24 +81,34 @@ function invSqrtOfGMCovArrayAndEig(gm::GaussianMixture )
         invSqrtLambda = diagm(sqrt(invEig))
         invSqrtCovArray[i] = R*invSqrtLambda*R'
     end
-    return (invSqrtCovArray,eigLambda0Array,eigLambdaEndArray)
+    return invSqrtCovArray,eigLambda0Array,eigLambdaEndArray
 end
 
 
 
-function GaussianMixtureAuxiliary(gm::GaussianMixture,nPoint::Int64)
-    D=length(mean(gm.components[1]))
-    y=zeros(Float64,nPoint,D)
-    for iPoint in 1:nPoint
-        y[iPoint,:]=rand(gm)
+function sumSq(x)
+    s=0.0
+    for v in x
+        s+=v^2
     end
-    grid=newGrid(y)
+    return s
+end
+
+
+
+function GaussianMixtureAuxiliary(gm::GaussianMixture,nPoint::Int64,idxGiven::Array{Int64,1})
+    D=length(mean(gm.components[1]))
+    points=zeros(Float64,nPoint,D)
+    for iPoint in 1:nPoint
+        points[iPoint,:]=rand(gm)
+    end
+    grid=newGrid(points,idxGiven)
     logDet2piCov=Array(Float64,length(gm.prior.p))
     for iComp in 1:length(gm.prior.p)
         logDet2piCov[iComp]=logdet(2*pi*cov(gm.components[iComp]))
     end
-    res=invSqrtOfGMCovArrayAndEig(gm)
-    return GaussianMixtureAuxiliary(gm,grid,res[1],res[2],res[3],logDet2piCov)
+    invSqrtCovArray,eigLambda0Array,eigLambdaEndArray=invSqrtOfGMCovArrayAndEig(gm)
+    return GaussianMixtureAuxiliary(gm,grid,invSqrtCovArray,eigLambda0Array,eigLambdaEndArray,logDet2piCov)
 end
 
 
@@ -95,25 +116,26 @@ end
 
 function getBoxBoundaries(multiIndex::Array{Int64,1},grid::Grid)
     # multiIndex to points
-    @assert length(multiIndex)==size(grid.y)[2]
-    D=size(grid.y)[2]
+    @assert length(multiIndex)==length(grid.y)
+    D=length(grid.y)
     zL=zeros(Float64,D)
     zU=zeros(Float64,D)
     for d in 1:D
         i=multiIndex[d]
         if i==0
             zL[d]=-Inf
-            zU[d]=grid.y[i+1,d]
-        elseif i==size(grid.y)[1]
-            zL[d]=grid.y[i,d]
+            zU[d]=grid.y[d][1]
+        elseif i==length(grid.y[d])
+            zL[d]=grid.y[d][i]
             zU[d]=+Inf
         else
-            zL[d]=grid.y[i,d]
-            zU[d]=grid.y[i+1,d]
+            zL[d]=grid.y[d][i]
+            zU[d]=grid.y[d][i+1]
         end
     end
     return (zL,zU)
 end
+
 
 
 function pointToBoxMultiIndex(x::Array{Float64,1},grid::Grid)
@@ -121,7 +143,7 @@ function pointToBoxMultiIndex(x::Array{Float64,1},grid::Grid)
     D=length(x)
     multiIndex=Array(Int64,D)
     for d in 1:D
-        i=searchsortedlast(grid.y[:,d],x[d])
+        i=searchsortedlast(grid.y[d],x[d])
         multiIndex[d]=i
     end
     return multiIndex
@@ -192,6 +214,109 @@ function productAndNormalize(gm1::GaussianMixture,gm2::GaussianMixture)
     return  MixtureModel(normalArray,w)
 end
 
+
+
+
+function conditionalProba(gm::GaussianMixture,idxGiven,x,idxNonNegligibleGaussianComp)
+    # only the idxGiven indexes of x are taken into account as xQ !
+    # todo : use logDet2piCov where possible
+    d=length(mean(gm.components[1]))
+    nTotalGauss= length(gm.components)
+    nNonNegligibleGauss = length(idxNonNegligibleGaussianComp)
+    idxNotGiven=setdiff(collect(1:d),idxGiven)
+    Id=eye(d,d)
+    Q = Id[idxGiven,:]
+    P = Id[idxNotGiven,:]
+    xQ=Q*x
+
+    logCoeffGauss = fill(-Inf,nNonNegligibleGauss)
+    gaussCompArray=Array(FullNormal,nNonNegligibleGauss)
+
+    count=1
+    for iGauss in idxNonNegligibleGaussianComp
+        nu = gm.prior.p[iGauss]
+        g = gm.components[iGauss]
+        mu = mean(g)
+        C = cov(g)
+        invC=inv(C)
+        PinvCPt=P*invC*P'
+        M = (PinvCPt)\((PinvCPt)*P*mu - P*invC*Q'*Q*(x-mu))
+        Sigma = inv(PinvCPt)
+
+        logKappa = -0.5*(- M'*PinvCPt*M + (P*mu)'*PinvCPt*(P*mu) + (Q*(x-mu))'*Q*invC*Q'*Q*(x-mu) - 2*(P*mu)'*P*invC*Q'*Q*(x-mu))
+        logCoeffGauss[count] = log(nu) -0.5*log(det(2*pi*C)) + logKappa[1] + 0.5*log(det(2*pi*Sigma))
+        gaussCompArray[count] = MvNormal(M,Sigma)
+        count+=1
+    end
+
+    logCoeffGauss=logCoeffGauss-maximum(logCoeffGauss)
+    wGauss = exp(logCoeffGauss)
+    wGauss = wGauss/sum(wGauss)
+
+    return MixtureModel(gaussCompArray,wGauss)
+end
+
+
+
+
+function findMaxNegQuadraticFormOnBox(sqrtQ,mu,logKhi,xL,xU)
+    # assumes we maximize -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    x=Variable(length(mu));
+    problem = minimize(sumsquares(sqrtQ*(x-mu)), [x<=xU,x>=xL])
+    solve!(problem,SCSSolver(verbose=0))
+    solution = problem.optval
+    return -0.5*solution + logKhi
+end
+
+
+
+function findUpperBoundNegQuadraticFormOnBox(eigLambdaEnd,mu,logKhi,xL,xU)
+    # eigLambdaEnd is the lowest eigenvalue of sqrtQ'*sqrtQ
+    # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    # this function is faster than findMaxNegQuadraticFormOnBox
+     if sumSq(xL)==Inf || sumSq(xU)==Inf
+        return -Inf
+    end
+
+    m=(xL+xU)/2
+    r=norm((xU-xL)/2)
+    return -eigLambdaEnd*sumSq(m - r*(mu-m)/norm(m-mu) - mu) +logKhi
+end
+
+
+
+function findLowerBoundNegQuadraticFormOnBox(eigLambda0,mu,logKhi,xL,xU)
+    # eigLambda0 is the highest eigenvalue of sqrtQ'*sqrtQ
+    # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
+    # this function is much faster than findMinNegQuadraticFormOnBox for high dimensions
+    if sumSq(xL)==Inf || sumSq(xU)==Inf
+        return -Inf
+    end
+
+    m=(xL+xU)/2
+    r=norm((xU-xL)/2)
+    return -eigLambda0*sumSq(m - r*(m-mu)/norm(m-mu) - mu)+logKhi
+end
+
+
+
+function multiIndexToNonNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureAuxiliary)
+    d=length(mean(gm.components[1]))
+    @assert d==length(multiIndex)
+    maxLen = size(gma.grid.y)[1]
+    if reduce(|,[(v==0 | v==maxLen) for v in multiIndex])
+        return Set{Int64}(1:length(gma.gm.prior.p))
+    end
+
+    if haskey(gma.grid.multiIndexToNonNegligibleComp,multiIndex)
+        return gma.grid.multiIndexToNonNegligibleComp[multiIndex]
+    else
+        nnIdx=findBoxNonNegligibleComp(multiIndex, gma)
+        # todo update the Dict !
+        gma.grid.multiIndexToNonNegligibleComp[multiIndex]=nnIdx
+        return nnIdx
+    end
+end
 
 
 
