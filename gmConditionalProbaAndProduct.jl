@@ -53,11 +53,11 @@ function newGrid(points::Array{Float64,2},idxGiven=[])
         else
             y[d]=[points[1,d],points[end,d]]
         end
-        # creates extended boundaries so as to hardly land on an infinite-sized box    
+        # creates extended boundaries so as to hardly land on an infinite-sized box
         minD=points[1,d]
         maxD=points[end,d]
         deltaD =  maxD-minD
-        
+
         y[d][1]=minD-1*deltaD
         y[d][end]=maxD+1*deltaD
     end
@@ -280,7 +280,11 @@ function findUpperBoundNegQuadraticFormOnBox(eigLambdaEnd,mu,logKhi,xL,xU)
 
     m=(xL+xU)/2
     r=norm((xU-xL)/2)
-    return -eigLambdaEnd*sumSq(m - r*(mu-m)/norm(m-mu) - mu) +logKhi
+    if norm(mu-m) < r
+        return logKhi
+    else
+        return -eigLambdaEnd*sumSq(m - r*(mu-m)/norm(m-mu) - mu) +logKhi
+    end
 end
 
 
@@ -292,11 +296,16 @@ function findLowerBoundNegQuadraticFormOnBox(eigLambda0,mu,logKhi,xL,xU)
     if sumSq(xL)==Inf || sumSq(xU)==Inf
         return -Inf
     end
-
-    m=(xL+xU)/2
-    r=norm((xU-xL)/2)
-    return -eigLambda0*sumSq(m - r*(m-mu)/norm(m-mu) - mu)+logKhi
+    if m==mu # very unlikely case
+        return  -sumSq((xU-xL)/2)*eigLambda0 +logKhi
+    else        
+        m=(xL+xU)/2
+        r=norm((xU-xL)/2)
+        return -eigLambda0*sumSq(m - r*(m-mu)/norm(m-mu) - mu)+logKhi
+    end
 end
+
+
 
 
 
@@ -319,8 +328,7 @@ function multiIndexToNonNegligibleComp(multiIndex::Array{Int64,1}, gma::Gaussian
 end
 
 
-
-
+#=
 function findBoxNonNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtureAuxiliary)
     d=length(mean(gma.gm.components[1]))
     y=getBoxBoundaries(multiIndex,gma.grid)
@@ -334,7 +342,7 @@ function findBoxNonNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtu
     for iComp in 1:nComp
         logKhi=-0.5*gma.logDet2piCov[iComp] + log(gm.prior.p[iComp])
         mu = mean(gm.components[iComp])
-        logU[iComp]=findHigherBoundNegQuadraticFormOnBox(gma.eigLambdaEndArray[iComp],mu,logKhi,xL,xU)
+        logU[iComp]=findUpperBoundNegQuadraticFormOnBox(gma.eigLambdaEndArray[iComp],mu,logKhi,xL,xU)
         #logU[iComp]=findMaxNegQuadraticFormOnBox(invSqrtCovArray[iComp],mu,logKhi,xL,xU)
         logL[iComp]=findLowerBoundNegQuadraticFormOnBox(gma.eigLambda0Array[iComp],mu,logKhi,xL,xU)
     end
@@ -349,25 +357,44 @@ function findBoxNonNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtu
     idxSortL=sortperm(L)
 
     K=1E3
+    alpha=1
     beta = nComp
-    nNegligibleCompTarget=nComp*0.9
-    sL=0.0
-    iu=1
-    sU=U[idxSortU[iu]]
+    # nNegligibleCompTarget=nComp*0.9
+
+    sU=0.0 #U[idxSortU[alpha]]
+    sL=L[idxSortL[beta]]
     negligibleIndexSet=Set{Int64}()
+    nonNegligibleIndexSet=Set{Int64}(L[idxSortL[beta]])
+    canContinue=true
     # todo decrease the value of beta as long as there is not enough negligible components
-    # while(iu<nNegligibleCompTarget || beta<2)
-    while(K*sU<L[idxSortL[beta]])
-        push!(negligibleIndexSet,idxSortU[iu])
-        iu+=1
-        sU+=U[idxSortU[iu]]
+    # while(iu<nNegligibleCompTarget && beta>2 ) # todo K*sU<L[idxSortL[beta]] ?
+
+    while K*(sU+U[idxSortU[alpha]])<sL && isempty(intersect(union(Set{Int64}(idxSortU[alpha]),negligibleIndexSet),nonNegligibleIndexSet))
+        sU+=U[idxSortU[alpha]]
+        push!(negligibleIndexSet,idxSortU[alpha])
+        alpha+=1
     end
-    #    beta-=1
+
+    if isempty(negligibleIndexSet)
+        # it's completely impossible !
+        canContinue=false
+    end
+
+    if K*sU<sL+L[idxSortL[beta]] &&  isempty(intersect(union(Set{Int64}(idxSortL[beta]),nonNegligibleIndexSet),negligibleIndexSet))
+        sL+=L[idxSortL[beta]]
+        push!(nonNegligibleIndexSet,idxSortL[beta])
+        beta-=1
+    end
+
+
+    end
+    # todo : increment sL[...[beta]]
+    #   beta-=1
     #end
     nonNegligibleIndexSet = setdiff(Set{Int64}(1:nComp),negligibleIndexSet)
     return nonNegligibleIndexSet
 end
-
+=#
 
 
 
@@ -411,9 +438,10 @@ Testing
 ==================================#
 
 gm=randomDrawGaussianMixture(50)
-gma=GaussianMixtureAuxiliary(gm,50)
+idxGiven=[1]
+gma=GaussianMixtureAuxiliary(gm,50,idxGiven)
 
-findBoxNonNegligibleComp([2,2], gma)
+#findBoxNonNegligibleComp([2,2], gma)
 
 
 
