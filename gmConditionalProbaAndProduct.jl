@@ -38,8 +38,11 @@ end
 
 
 
+
+
+
 function newGrid(points::Array{Float64,2},idxGiven=[])
-     @assert size(points)[1]>=2
+    @assert size(points)[1]>=2
     # creates a Grid in the right format
     # points[i,d] d'th dimension of the i'th point
     # todo : use the gm structure to derive these bounds instead (more accurate)
@@ -173,6 +176,80 @@ function product(gC1::GaussComp,gC2::GaussComp)
 end
 
 
+function fusion(gc1::GaussComp,gc2::GaussComp)
+    w=[exp(gc1.logW),exp(gc2.logW)]
+    s=sum(w)
+    w=w/s
+    mu=w[1]*mean(gc1.normal)+w[2]*mean(gc2.normal)
+    C=w[1]*(cov(gc1.normal)+ (mean(gc1.normal)-mu)*(mean(gc1.normal)-mu)')+w[2]*(cov(gc2.normal)+ (mean(gc2.normal)-mu)*(mean(gc2.normal)-mu)')
+    return GaussComp(log(s),MvNormal(mu,C))
+end
+
+
+
+function sumSqDiff(gc1::GaussComp,gc2::GaussComp)
+    gc=Array(GaussComp,3)
+    gc[1]=gc1
+    gc[2]=gc2
+    gc[3]=fusion(gc[1],gc[2])
+    gcp=Array(GaussComp,3,3)
+    for i in 1:3
+        for j in i:3
+            gcp[i,j]=product(gc[i],gc[j])
+        end
+    end
+    s=0
+    for i in 1:3
+        s+=exp(gcp[i,i].logW)
+    end
+    s+=2*exp(gcp[1,2].logW)
+    s-=2*exp(gcp[1,3].logW)
+    s-=2*exp(gcp[2,3].logW)
+    return s
+end
+
+
+function sumSqDiff(idxToFuse1::Int64,idxToFuse2::Int64,gm::GaussianMixture)
+    #= 
+    yields the value of the integral of the square of the difference 
+    between gm and a modified version of gm where the components 
+    idxToFuse1 and idxToFuse2 are fused into one gaussian
+    todo : optimize because the usage of the function product may be not necessary
+    =#
+    return sumSqDiff(GaussComp(log(gm.prior.p[idxToFuse1]), gm.components[idxToFuse1])
+                     GaussComp(log(gm.prior.p[idxToFuse2]), gm.components[idxToFuse2]))
+end
+
+
+
+
+#=
+function gmReduction(gm::GaussianMixture,nCompMax::Int64)
+    #= approximation of gm by a GaussianMixture with at most nCompMax components =#
+    nComp=length(gm.prior.p)
+    gcSet=Set{GaussComp}()
+    for iComp in 1:nComp
+        push!(gcSet,GaussComp(log(gm.prior.p[iComp]),gm.normal))
+    end
+    
+    distance=Dict{Set{GaussComp},Float64}()
+    minDist=Inf
+    argMinDist=Set{Array{GaussComp,1}}()
+    for gc1 in gcSet
+        for gc2 in gcSet
+            s=Set{Array{GaussComp,1}}([gc1,gc2])
+            if gc1==gc2 
+                distance[s]=0
+            elseif !haskey(distance.dict,s)
+                distance[s]=sumSqDiff(gc1,gc2)
+            end
+        end
+    end
+    
+end
+=#
+
+
 function productAndNormalize(gm1::GaussianMixture,gm2::GaussianMixture)
     nComp =gm1.prior.K * gm2.prior.K
     gcArray=Array(GaussComp,nComp)
@@ -274,7 +351,7 @@ function findUpperBoundNegQuadraticFormOnBox(eigLambdaEnd,mu,logKhi,xL,xU)
     # eigLambdaEnd is the lowest eigenvalue of sqrtQ'*sqrtQ
     # assumes we want to lower bound -0.5*sumsquare(sqrtQ*(x-mu)) + logKhi
     # this function is faster than findMaxNegQuadraticFormOnBox
-     if sumSq(xL)==Inf || sumSq(xU)==Inf
+    if sumSq(xL)==Inf || sumSq(xU)==Inf
         return -Inf
     end
 
@@ -298,13 +375,12 @@ function findLowerBoundNegQuadraticFormOnBox(eigLambda0,mu,logKhi,xL,xU)
     end
     if m==mu # very unlikely case
         return  -sumSq((xU-xL)/2)*eigLambda0 +logKhi
-    else        
+    else
         m=(xL+xU)/2
         r=norm((xU-xL)/2)
         return -eigLambda0*sumSq(m - r*(m-mu)/norm(m-mu) - mu)+logKhi
     end
 end
-
 
 
 
