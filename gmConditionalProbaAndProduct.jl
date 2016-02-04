@@ -210,44 +210,103 @@ end
 
 
 function sumSqDiff(idxToFuse1::Int64,idxToFuse2::Int64,gm::GaussianMixture)
-    #= 
-    yields the value of the integral of the square of the difference 
-    between gm and a modified version of gm where the components 
+    #=
+    yields the value of the integral of the square of the difference
+    between gm and a modified version of gm where the components
     idxToFuse1 and idxToFuse2 are fused into one gaussian
     todo : optimize because the usage of the function product may be not necessary
     =#
-    return sumSqDiff(GaussComp(log(gm.prior.p[idxToFuse1]), gm.components[idxToFuse1])
+    return sumSqDiff(GaussComp(log(gm.prior.p[idxToFuse1]), gm.components[idxToFuse1]),
                      GaussComp(log(gm.prior.p[idxToFuse2]), gm.components[idxToFuse2]))
 end
 
 
 
 
-#=
+
 function gmReduction(gm::GaussianMixture,nCompMax::Int64)
     #= approximation of gm by a GaussianMixture with at most nCompMax components =#
     nComp=length(gm.prior.p)
+    if nComp<=nCompMax
+        return gm
+    end
     gcSet=Set{GaussComp}()
     for iComp in 1:nComp
-        push!(gcSet,GaussComp(log(gm.prior.p[iComp]),gm.normal))
+        push!(gcSet,GaussComp(log(gm.prior.p[iComp]),gm.components[iComp]))
     end
-    
+
     distance=Dict{Set{GaussComp},Float64}()
+
     minDist=Inf
-    argMinDist=Set{Array{GaussComp,1}}()
+    argMinDist=Set{GaussComp}()
     for gc1 in gcSet
         for gc2 in gcSet
-            s=Set{Array{GaussComp,1}}([gc1,gc2])
-            if gc1==gc2 
-                distance[s]=0
-            elseif !haskey(distance.dict,s)
-                distance[s]=sumSqDiff(gc1,gc2)
+            s=Set{GaussComp}([gc1,gc2])
+
+            if gc1!=gc2 && !haskey(distance,s)
+                d=sumSqDiff(gc1,gc2)
+                distance[s]=d
+                if d<minDist
+                    minDist=d
+                    argMinDist=Set{GaussComp}([gc1,gc2])
+                end
             end
         end
     end
-    
+
+    while(length(gcSet)>nCompMax)
+
+        gc = collect(argMinDist)
+        gc3=fusion(gc[1],gc[2])
+
+        # erase the corresponding keys from the distance table
+        for k in keys(distance)
+            if in(gc[1],k) || in(gc[2],k)
+                delete!(distance,k)
+            end
+        end
+        # erase from gcSet
+        delete!(gcSet,gc[1])
+        delete!(gcSet,gc[2])
+
+        for gc1 in gcSet
+            s=Set{GaussComp}([gc1,gc3])
+            d=sumSqDiff(gc1,gc3)
+            distance[s]=d
+        end
+        # update gcSet after
+        push!(gcSet,gc3)
+
+        minDist=Inf
+        argMinDist=Set{GaussComp}()
+        for k in keys(distance)
+            if distance[k]<minDist
+                argMinDist=k
+                minDist=distance[k]
+            end
+        end
+    end
+
+    nComp=length(gcSet)
+    weight=Array(Float64,nComp)
+    normalArray=Array(FullNormal,nComp)
+    iComp=1
+    for gComp in gcSet
+        weight[iComp]=exp(gComp.logW)
+        normalArray[iComp]=gComp.normal
+        iComp+=1
+    end
+
+    weight=weight/sum(weight)
+    return  MixtureModel(normalArray,weight)
 end
-=#
+
+
+
+
+
+
+
 
 
 function productAndNormalize(gm1::GaussianMixture,gm2::GaussianMixture)
@@ -282,7 +341,7 @@ function productAndNormalize(gm1::GaussianMixture,gm2::GaussianMixture)
 
     # create a GaussianMixture
     normalArray=Array(FullNormal,nComp)
-    w = zeros(Float64,nComp)
+    w = Array(Float64,nComp)
 
     for iComp in 1:nComp
         w[iComp]=exp(gcArray[iComp].logW)
