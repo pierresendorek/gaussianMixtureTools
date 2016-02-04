@@ -1,8 +1,8 @@
 # todo : gaussianMixtureWrapper containing precomputed values of log
 
 using Distributions
-using Convex
-using SCS
+#using Convex
+#using SCS
 
 include("randomDrawGaussianMixture.jl")
 
