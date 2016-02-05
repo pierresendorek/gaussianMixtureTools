@@ -1,4 +1,5 @@
 # todo : gaussianMixtureWrapper containing precomputed values of log
+# todo : test if bounds 1 and 2 ok separately
 
 using Distributions
 #using Convex
@@ -65,7 +66,24 @@ function newGrid(points::Array{Float64,2},idxGiven::Array{Int64,1})
     return Grid(y,Dict{Array{Int64,1},Array{Int64,1}}())
 end
 
-
+function marginalProbability(idxNonMarginalized::Array{Int64,1},gm::GaussianMixture)
+    # yields another gaussian mixture
+    D=length(mean(gm.components[1]))
+    nComp=length(gm.prior.p)
+    Id=eye(D,D)
+    #idxMarginalized=setdiff(collect(1:D),idxNonMarginalized)
+    #Q = Id[idxMarginalized,:]
+    P = Id[idxNonMarginalized,:]
+    
+    normalArray = Array(FullNormal,nComp)
+    w = deepcopy(gm.prior.p)
+    for iComp in 1:nComp
+        Pmu = P*mean(gm.components[iComp])
+        PCovPt = P*cov(gm.components[iComp])*P'
+        normalArray[iComp]=MvNormal(Pmu,PCovPt)
+    end
+    return MixtureModel(normalArray,w)
+end
 
 function invSqrtOfGMCovArrayAndEig(gm::GaussianMixture )
     invSqrtCovArray=Array(Array{Float64,2},length(gm.prior.p))
@@ -99,6 +117,7 @@ end
 function GaussianMixtureAuxiliary(gm::GaussianMixture,nPoint::Int64,idxGiven::Array{Int64,1})
     D=length(mean(gm.components[1]))
     points=zeros(Float64,nPoint,D)
+    # take quantiles instead
     for iPoint in 1:nPoint
         points[iPoint,:]=rand(gm)
     end
@@ -299,7 +318,6 @@ end
 
 
 
-
 function productAndNormalize(gm1::GaussianMixture,gm2::GaussianMixture)
     nComp =gm1.prior.K * gm2.prior.K
     gcArray=Array(GaussComp,nComp)
@@ -434,9 +452,9 @@ function findBoundsNegQuadraticFormOnBox2(zL,zU,iComp,gma)
     upperBound=0
     if(dist<r)
         upperBound=logKhi
-    else        
+    else
         lambdaSmall=minimum(DR[1])
-        upperBound = -lambdaSmall*sumSq(mb-r*(mub-mb)/dist - mub) + logKhi            
+        upperBound = -lambdaSmall*sumSq(mb-r*(mub-mb)/dist - mub) + logKhi
     end
     lowerBound=0
     lambdaBig=maximum(DR[1])
@@ -497,12 +515,12 @@ function findBoxNonNegligibleComp(multiIndex::Array{Int64,1}, gma::GaussianMixtu
     L=exp(logL)
     #idxSortU=sortperm(logU)
     idxSortL=sortperm(logL)
-    K=1E2
+    K=1E3
     alpha = nComp
     # nNegligibleCompTarget=nComp*0.9
     sU=0.0 #U[idxSortU[alpha]]
     sL=L[idxSortL[alpha]]
-    
+
     nonNegligibleIndexSet=Set{Int64}(idxSortL[alpha])
     for i in 1:nComp
         if !in(i,nonNegligibleIndexSet)
@@ -635,7 +653,7 @@ function testConditionalProba(gma::GaussianMixtureAuxiliary)
     x=randn(2)
     nPoint=5
     gma= GaussianMixtureAuxiliary(gm,nPoint::Int64,idxGiven)
-    
+
     #idxNonNegligibleGaussianComp = findBoxNonNegligibleComp(pointToBoxMultiIndex(x,gma.grid),gma)
     #multiIndex
     #idxNonNegligibleGaussianComp=findBoxNonNegligibleComp( ,gma)
