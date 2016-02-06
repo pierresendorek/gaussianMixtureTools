@@ -6,7 +6,7 @@ using Distributions
 #using SCS
 
 include("randomDrawGaussianMixture.jl")
-
+include("dichotomy.jl")
 
 
 # datatype definition
@@ -36,6 +36,9 @@ type GaussianMixtureAuxiliary
     logDet2piCov::Array{Float64,1}
     idxGiven::Array{Int64,1}
 end
+
+
+
 
 
 
@@ -74,7 +77,7 @@ function marginalProbability(idxNonMarginalized::Array{Int64,1},gm::GaussianMixt
     #idxMarginalized=setdiff(collect(1:D),idxNonMarginalized)
     #Q = Id[idxMarginalized,:]
     P = Id[idxNonMarginalized,:]
-    
+
     normalArray = Array(FullNormal,nComp)
     w = deepcopy(gm.prior.p)
     for iComp in 1:nComp
@@ -113,14 +116,47 @@ function sumSq(x)
 end
 
 
+function cdfGM(gm::GaussianMixture,x::Float64)
+    # only works with 1D gaussian mixtures
+    @assert length(mean(gm.components[1]))==1
+    s=0
+    for iComp in 1:length(gm.prior.p)
+        mu=mean(gm.components[iComp])[1]
+        sigma=sqrt(cov(gm.components[iComp])[1])
+        s+=gm.prior.p[iComp]*cdf(Normal(mu,sigma),x)
+    end
+    return s
+end
+
+
 
 function GaussianMixtureAuxiliary(gm::GaussianMixture,nPoint::Int64,idxGiven::Array{Int64,1})
     D=length(mean(gm.components[1]))
     points=zeros(Float64,nPoint,D)
-    # take quantiles instead
-    for iPoint in 1:nPoint
-        points[iPoint,:]=rand(gm)
+    
+    # quantiles (optimized version)
+    qBound=1E-6
+    for d in 1:D
+       gmm=marginalProbability([d],gm)
+        function cumulative(x)
+            return cdfGM(gmm,x)
+        end
+        for iPoint in 1:nPoint
+            if iPoint==1
+                q=qBound
+            elseif iPoint==nPoint
+                q=1-qBound
+            else
+                q=iPoint/nPoint
+            end
+            # todo replace the values -1.0,1.0 
+            # by the smallest box containing all the means
+            x=solve(cumulative,q,-1.0,1.0) 
+            points[iPoint,d]=x
+        end
     end
+   
+
     grid=newGrid(points,idxGiven)
     logDet2piCov=Array(Float64,length(gm.prior.p))
     for iComp in 1:length(gm.prior.p)
